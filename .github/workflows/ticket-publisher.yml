@@ -1,0 +1,28 @@
+name: Publish Engineering Tickets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/engineering/tickets/**/*.md"
+  pull_request_target:
+    types:
+      - closed
+    branches:
+      - main
+    paths:
+      - "docs/engineering/tickets/**/*.md"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  publish:
+    uses: DesireGwanzura/standalone-devops-platform/.github/workflows/reusable-ticket-publisher.yml@main
+    with:
+      ticket_dir: "docs/engineering/tickets"
+      python_version: "3.12"
+      devops_platform_ref: "main"

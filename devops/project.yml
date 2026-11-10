@@ -1,0 +1,28 @@
+platform:
+  name: standalone-devops-platform
+  workflow_repository: DesireGwanzura/standalone-devops-platform
+  workflow_ref: main
+
+project:
+  name: eTalent Search
+  key: ET
+  repository: DesireGwanzura/etalent-search
+  default_branch: main
+
+tickets:
+  directory: docs/engineering/tickets
+  publishing:
+    automatic: true
+    approval_based: true
+
+gitlab:
+  enabled: true
+  mirror_path: DesireGwanzura/etalent-search
+
+ci:
+  backend: gradle
+  frontend: angular
+  required_checks:
+    - backend-build
+    - backend-tests
+    - frontend-build
