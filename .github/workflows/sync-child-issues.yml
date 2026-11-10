@@ -1,0 +1,174 @@
+
+name: Sync Issues to Candidate Search
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened]
+
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Central issue number to synchronise
+        required: true
+        type: number
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: candidate-search-sync-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: Enviro365
+          repositories: candidate-search
+          permission-issues: write
+
+      - name: Synchronise issue
+        uses: actions/github-script@v7
+        env:
+          CHILD_TOKEN: ${{ steps.app-token.outputs.token }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const childOwner = "Enviro365";
+            const childRepo = "candidate-search";
+            const childToken = process.env.CHILD_TOKEN;
+
+            const issueNumber =
+              context.payload.issue?.number ??
+              Number(context.payload.inputs?.issue_number);
+
+            if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+              throw new Error("Invalid issue number");
+            }
+
+            const { data: master } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+
+            if (master.pull_request) return;
+
+            const marker = /<!-- child-issue: ([^ ]+) -->/;
+            const match = (master.body || "").match(marker);
+
+            const cleanBody = (master.body || "")
+              .replace(marker, "")
+              .trim();
+
+            async function request(path, method, body) {
+              const response = await fetch(
+                `https://api.github.com${path}`,
+                {
+                  method,
+                  headers: {
+                    Authorization: `Bearer ${childToken}`,
+                    Accept: "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Content-Type": "application/json"
+                  },
+                  body: body ? JSON.stringify(body) : undefined
+                }
+              );
+
+              const result = await response.json();
+
+              if (!response.ok) {
+                throw new Error(JSON.stringify(result));
+              }
+
+              return result;
+            }
+
+            const description = `${cleanBody}
+
+            ---
+            **Central master ticket:** ${master.html_url}
+            **Central ticket number:** #${master.number}
+
+            <!-- central-issue: ${master.html_url} -->`;
+
+            const action = context.payload.action ?? "manual";
+
+            if (!match) {
+              if (action !== "opened" && action !== "manual") {
+                core.info("No child issue linked. Skipping.");
+                return;
+              }
+
+              const created = await request(
+                `/repos/${childOwner}/${childRepo}/issues`,
+                "POST",
+                {
+                  title: master.title,
+                  body: description
+                }
+              );
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: master.number,
+                body: `${cleanBody}
+
+            <!-- child-issue: ${childOwner}/${childRepo}#${created.number} -->`
+              });
+
+              core.info(`Created child issue #${created.number}`);
+              return;
+            }
+
+            const reference = match[1];
+            const separator = reference.lastIndexOf("#");
+
+            if (
+              reference.slice(0, separator) !==
+              `${childOwner}/${childRepo}`
+            ) {
+              throw new Error("Unexpected child repository reference");
+            }
+
+            const childNumber = Number(
+              reference.slice(separator + 1)
+            );
+
+            if (!Number.isInteger(childNumber) || childNumber <= 0) {
+              throw new Error("Invalid child issue number");
+            }
+
+            if (action === "closed" || action === "reopened") {
+              await request(
+                `/repos/${childOwner}/${childRepo}/issues/${childNumber}`,
+                "PATCH",
+                {
+                  state: action === "closed" ? "closed" : "open"
+                }
+              );
+
+              core.info(`Child issue ${action}`);
+              return;
+            }
+
+            await request(
+              `/repos/${childOwner}/${childRepo}/issues/${childNumber}`,
+              "PATCH",
+              {
+                title: master.title,
+                body: description
+              }
+            );
+
+            core.info(`Updated child issue #${childNumber}`);
